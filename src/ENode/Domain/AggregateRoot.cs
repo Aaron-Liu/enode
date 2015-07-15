@@ -68,6 +68,10 @@ namespace ENode.Domain
             AppendUncommittedEvent(domainEvent);
         }
 
+        /// <summary>
+        /// Handler domain event.
+        /// </summary>
+        /// <param name="domainEvent"></param>
         private void HandleEvent(IDomainEvent domainEvent)
         {
             if (_eventHandlerProvider == null)
