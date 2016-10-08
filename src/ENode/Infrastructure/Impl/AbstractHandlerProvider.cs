@@ -7,7 +7,7 @@ using ECommon.Components;
 namespace ENode.Infrastructure.Impl
 {
     public abstract class AbstractHandlerProvider<TKey, THandlerProxyInterface, THandlerSource> : IAssemblyInitializer
-        where THandlerProxyInterface : class, IHandlerProxy
+        where THandlerProxyInterface : class, IObjectProxy
     {
         private readonly IDictionary<TKey, IList<THandlerProxyInterface>> _handlerDict = new Dictionary<TKey, IList<THandlerProxyInterface>>();
         private readonly IDictionary<TKey, MessageHandlerData<THandlerProxyInterface>> _messageHandlerDict = new Dictionary<TKey, MessageHandlerData<THandlerProxyInterface>>();
@@ -22,10 +22,6 @@ namespace ENode.Infrastructure.Impl
         {
             foreach (var handlerType in assemblies.SelectMany(assembly => assembly.GetTypes().Where(IsHandlerType)))
             {
-                if (!TypeUtils.IsComponent(handlerType))
-                {
-                    throw new Exception(string.Format("Handler [type={0}] should be marked as component.", handlerType.FullName));
-                }
                 RegisterHandler(handlerType);
             }
             InitializeHandlerPriority();
@@ -69,14 +65,14 @@ namespace ENode.Infrastructure.Impl
         }
         private int? GetHandleMethodPriority(THandlerProxyInterface handler, TKey key)
         {
-            var handleMethods = handler.GetInnerHandler().GetType().GetMethods().Where(x => x.Name == "HandleAsync");
+            var handleMethods = handler.GetInnerObject().GetType().GetMethods().Where(x => x.Name == "HandleAsync");
             foreach (var method in handleMethods)
             {
                 var argumentTypes = method.GetParameters().Select(x => x.ParameterType).ToArray();
                 if (IsHandleMethodMatchKey(argumentTypes, key))
                 {
                     var methodPriorityAttributes = method.GetCustomAttributes(typeof(PriorityAttribute), false);
-                    var classPriorityAttributes = handler.GetInnerHandler().GetType().GetCustomAttributes(typeof(PriorityAttribute), false);
+                    var classPriorityAttributes = handler.GetInnerObject().GetType().GetCustomAttributes(typeof(PriorityAttribute), false);
                     if (methodPriorityAttributes.Any())
                     {
                         return ((PriorityAttribute)methodPriorityAttributes.First()).Priority;
@@ -109,18 +105,33 @@ namespace ENode.Infrastructure.Impl
                     _handlerDict.Add(key, handlers);
                 }
 
-                var handler = handlers.SingleOrDefault(x => x.GetInnerHandler().GetType() == handlerType);
+                var handler = handlers.SingleOrDefault(x => x.GetInnerObject().GetType() == handlerType);
                 if (handler != null)
                 {
                     throw new InvalidOperationException("Handler cannot handle duplicate message, handlerType:" + handlerType);
                 }
 
-                handlers.Add(Activator.CreateInstance(handlerProxyType, new[] { ObjectContainer.Resolve(handlerType) }) as THandlerProxyInterface);
+                var lifeStyle = ParseComponentLife(handlerType);
+                var realHandler = default(object);
+                if (lifeStyle == LifeStyle.Singleton)
+                {
+                    realHandler = ObjectContainer.Resolve(handlerType);
+                }
+                handlers.Add(Activator.CreateInstance(handlerProxyType, new[] { realHandler, handlerType }) as THandlerProxyInterface);
             }
         }
         private IEnumerable<Type> ScanHandlerInterfaces(Type type)
         {
             return type.GetInterfaces().Where(x => x.IsGenericType && x.GetGenericTypeDefinition() == GetGenericHandlerType());
+        }
+        private static LifeStyle ParseComponentLife(Type type)
+        {
+            var attributes = type.GetCustomAttributes<ComponentAttribute>(false);
+            if (attributes != null && attributes.Any())
+            {
+                return attributes.First().LifeStyle;
+            }
+            return LifeStyle.Singleton;
         }
     }
 }

@@ -19,9 +19,9 @@ namespace ENode.Commanding.Impl
 
         private readonly string _connectionString;
         private readonly string _tableName;
-        private readonly string _primaryKeyName;
+        private readonly string _uniqueIndexName;
         private readonly IJsonSerializer _jsonSerializer;
-        private readonly ITypeCodeProvider _typeCodeProvider;
+        private readonly ITypeNameProvider _typeNameProvider;
         private readonly IOHelper _ioHelper;
         private readonly ILogger _logger;
 
@@ -31,18 +31,26 @@ namespace ENode.Commanding.Impl
         /// </summary>
         public SqlServerCommandStore(OptionSetting optionSetting)
         {
-            Ensure.NotNull(optionSetting, "optionSetting");
-
-            _connectionString = optionSetting.GetOptionValue<string>("ConnectionString");
-            _tableName = optionSetting.GetOptionValue<string>("TableName");
-            _primaryKeyName = optionSetting.GetOptionValue<string>("PrimaryKeyName");
+            if (optionSetting != null)
+            {
+                _connectionString = optionSetting.GetOptionValue<string>("ConnectionString");
+                _tableName = optionSetting.GetOptionValue<string>("TableName");
+                _uniqueIndexName = optionSetting.GetOptionValue<string>("UniqueIndexName");
+            }
+            else
+            {
+                var setting = ENodeConfiguration.Instance.Setting.DefaultDBConfigurationSetting;
+                _connectionString = setting.ConnectionString;
+                _tableName = setting.CommandTableName;
+                _uniqueIndexName = setting.CommandTableCommandIdUniqueIndexName;
+            }
 
             Ensure.NotNull(_connectionString, "_connectionString");
             Ensure.NotNull(_tableName, "_tableName");
-            Ensure.NotNull(_primaryKeyName, "_primaryKeyName");
+            Ensure.NotNull(_uniqueIndexName, "_uniqueIndexName");
 
             _jsonSerializer = ObjectContainer.Resolve<IJsonSerializer>();
-            _typeCodeProvider = ObjectContainer.Resolve<ITypeCodeProvider>();
+            _typeNameProvider = ObjectContainer.Resolve<ITypeNameProvider>();
             _ioHelper = ObjectContainer.Resolve<IOHelper>();
             _logger = ObjectContainer.Resolve<ILoggerFactory>().Create(GetType().FullName);
         }
@@ -57,7 +65,7 @@ namespace ENode.Commanding.Impl
         {
             var record = ConvertTo(handledCommand);
 
-            return _ioHelper.TryIOFuncAsync<AsyncTaskResult<CommandAddResult>>(async () =>
+            return _ioHelper.TryIOFuncAsync(async () =>
             {
                 try
                 {
@@ -69,23 +77,23 @@ namespace ENode.Commanding.Impl
                 }
                 catch (SqlException ex)
                 {
-                    if (ex.Number == 2627 && ex.Message.Contains(_primaryKeyName))
+                    if (ex.Number == 2601 && ex.Message.Contains(_uniqueIndexName))
                     {
                         return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.Success, null, CommandAddResult.DuplicateCommand);
                     }
                     _logger.Error(string.Format("Add handled command has sql exception, handledCommand: {0}", handledCommand), ex);
-                    return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.IOException, ex.Message, CommandAddResult.Failed);
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     _logger.Error(string.Format("Add handled command has unkown exception, handledCommand: {0}", handledCommand), ex);
-                    return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.Failed, ex.Message, CommandAddResult.Failed);
+                    throw;
                 }
             }, "AddCommandAsync");
         }
         public Task<AsyncTaskResult<HandledCommand>> GetAsync(string commandId)
         {
-            return _ioHelper.TryIOFuncAsync<AsyncTaskResult<HandledCommand>>(async () =>
+            return _ioHelper.TryIOFuncAsync(async () =>
             {
                 try
                 {
@@ -125,7 +133,7 @@ namespace ENode.Commanding.Impl
                 CommandId = handledCommand.CommandId,
                 AggregateRootId = handledCommand.AggregateRootId,
                 MessagePayload = handledCommand.Message != null ? _jsonSerializer.Serialize(handledCommand.Message) : null,
-                MessageTypeCode = handledCommand.Message != null ? _typeCodeProvider.GetTypeCode(handledCommand.Message.GetType()) : 0,
+                MessageTypeName = handledCommand.Message != null ? _typeNameProvider.GetTypeName(handledCommand.Message.GetType()) : null,
                 CreatedOn = DateTime.Now,
             };
         }
@@ -133,9 +141,9 @@ namespace ENode.Commanding.Impl
         {
             var message = default(IApplicationMessage);
 
-            if (record.MessageTypeCode > 0)
+            if (!string.IsNullOrEmpty(record.MessageTypeName))
             {
-                var messageType = _typeCodeProvider.GetType(record.MessageTypeCode);
+                var messageType = _typeNameProvider.GetType(record.MessageTypeName);
                 message = _jsonSerializer.Deserialize(record.MessagePayload, messageType) as IApplicationMessage;
             }
 
@@ -149,7 +157,7 @@ namespace ENode.Commanding.Impl
             public string CommandId { get; set; }
             public string AggregateRootId { get; set; }
             public string MessagePayload { get; set; }
-            public int MessageTypeCode { get; set; }
+            public string MessageTypeName { get; set; }
             public DateTime CreatedOn { get; set; }
         }
     }

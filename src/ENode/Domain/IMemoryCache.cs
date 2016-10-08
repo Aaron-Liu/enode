@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+
 namespace ENode.Domain
 {
     /// <summary>Represents a high speed memory cache to get or set aggregate.
@@ -23,6 +25,14 @@ namespace ENode.Domain
         void Set(IAggregateRoot aggregateRoot);
         /// <summary>Refresh the aggregate memory cache by replaying events of event store.
         /// </summary>
-        void RefreshAggregateFromEventStore(int aggregateRootTypeCode, string aggregateRootId);
+        void RefreshAggregateFromEventStore(string aggregateRootTypeName, string aggregateRootId);
+        /// <summary>Remove an aggregate from memory.
+        /// </summary>
+        /// <param name="aggregateRootId"></param>
+        bool Remove(object aggregateRootId);
+        /// <summary>Get all the aggregates from memory cache.
+        /// </summary>
+        /// <returns></returns>
+        IEnumerable<AggregateCacheInfo> GetAll();
     }
 }

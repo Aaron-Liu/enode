@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using ECommon.Components;
+using ECommon.Utilities;
 using ENode.Eventing;
 
 namespace ENode.Domain
@@ -12,6 +13,7 @@ namespace ENode.Domain
     [Serializable]
     public abstract class AggregateRoot<TAggregateRootId> : IAggregateRoot
     {
+        private static readonly IList<IDomainEvent> _emptyEvents = new List<IDomainEvent>();
         private static IAggregateRootInternalHandlerProvider _eventHandlerProvider;
         private int _version;
         private Queue<IDomainEvent> _uncommittedEvents;
@@ -25,16 +27,31 @@ namespace ENode.Domain
             protected set { _id = value; }
         }
 
+        /// <summary>Default constructor.
+        /// </summary>
+        protected AggregateRoot()
+        {
+            _uncommittedEvents = new Queue<IDomainEvent>();
+        }
         /// <summary>Parameterized constructor.
         /// </summary>
-        protected AggregateRoot(TAggregateRootId id)
+        protected AggregateRoot(TAggregateRootId id) : this()
         {
             if (id == null)
             {
                 throw new ArgumentNullException("id");
             }
             _id = id;
-            _uncommittedEvents = new Queue<IDomainEvent>();
+        }
+        /// <summary>Parameterized constructor.
+        /// </summary>
+        protected AggregateRoot(TAggregateRootId id, int version) : this(id)
+        {
+            if (version < 0)
+            {
+                throw new ArgumentException(string.Format("Version cannot small than zero, aggregateRootId: {0}, version: {1}", id, version));
+            }
+            _version = version;
         }
 
         /// <summary>Act the current aggregate as the given type of role.
@@ -48,14 +65,14 @@ namespace ENode.Domain
         {
             if (!typeof(TRole).IsInterface)
             {
-                throw new Exception(string.Format("'{0}' is not an interface type.", typeof(TRole).Name));
+                throw new Exception(string.Format("'{0}' is not an interface type.", typeof(TRole).FullName));
             }
 
             var actor = this as TRole;
 
             if (actor == null)
             {
-                throw new Exception(string.Format("'{0}' can not act as role '{1}'.", GetType().FullName, typeof(TRole).Name));
+                throw new Exception(string.Format("'{0}' cannot act as role '{1}'.", GetType().FullName, typeof(TRole).FullName));
             }
 
             return actor;
@@ -69,15 +86,25 @@ namespace ENode.Domain
         /// </remarks>
         /// </summary>
         /// <param name="domainEvent"></param>
-        protected void ApplyEvent(IDomainEvent domainEvent)
+        protected void ApplyEvent(IDomainEvent<TAggregateRootId> domainEvent)
         {
+            if (domainEvent == null)
+            {
+                throw new ArgumentNullException("domainEvent");
+            }
+            if (Equals(this._id, default(TAggregateRootId)))
+            {
+                throw new Exception("Aggregate root id cannot be null.");
+            }
+            domainEvent.AggregateRootId = _id;
+            domainEvent.Version = _version + 1;
             HandleEvent(domainEvent);
             AppendUncommittedEvent(domainEvent);
         }
         /// <summary>Apply multiple domain events to the current aggregate root.
         /// </summary>
         /// <param name="domainEvent"></param>
-        protected void ApplyEvents(params IDomainEvent[] domainEvents)
+        protected void ApplyEvents(params IDomainEvent<TAggregateRootId>[] domainEvents)
         {
             foreach (var domainEvent in domainEvents)
             {
@@ -96,9 +123,13 @@ namespace ENode.Domain
             {
                 throw new Exception(string.Format("Could not find event handler for [{0}] of [{1}]", domainEvent.GetType().FullName, GetType().FullName));
             }
+            if (Equals(this._id, default(TAggregateRootId)) && domainEvent.Version == 1)
+            {
+                this._id = TypeUtils.ConvertType<TAggregateRootId>(domainEvent.AggregateRootStringId);
+            }
             handler(this, domainEvent);
         }
-        private void AppendUncommittedEvent(IDomainEvent domainEvent)
+        private void AppendUncommittedEvent(IDomainEvent<TAggregateRootId> domainEvent)
         {
             if (_uncommittedEvents == null)
             {
@@ -106,7 +137,7 @@ namespace ENode.Domain
             }
             if (_uncommittedEvents.Any(x => x.GetType() == domainEvent.GetType()))
             {
-                throw new InvalidOperationException("Cannot apply duplicated domain event type:" + domainEvent.GetType().FullName);
+                throw new InvalidOperationException(string.Format("Cannot apply duplicated domain event type: {0}, current aggregateRoot type: {1}, id: {2}", domainEvent.GetType().FullName, this.GetType().FullName, _id));
             }
             _uncommittedEvents.Enqueue(domainEvent);
         }
@@ -115,11 +146,11 @@ namespace ENode.Domain
             var current = this as IAggregateRoot;
             if (eventStream.Version > 1 && eventStream.AggregateRootId != current.UniqueId)
             {
-                throw new Exception(string.Format("Invalid domain event stream, aggregateRootId:{0}, expected aggregateRootId:{1}", eventStream.AggregateRootId, current.UniqueId));
+                throw new InvalidOperationException(string.Format("Invalid domain event stream, aggregateRootId:{0}, expected aggregateRootId:{1}, type:{2}", eventStream.AggregateRootId, current.UniqueId, current.GetType().FullName));
             }
             if (eventStream.Version != current.Version + 1)
             {
-                throw new Exception(string.Format("Invalid domain event stream, version:{0}, expected version:{1}", eventStream.Version, current.Version));
+                throw new InvalidOperationException(string.Format("Invalid domain event stream, version:{0}, expected version:{1}, current aggregateRoot type:{2}, id:{3}", eventStream.Version, current.Version, this.GetType().FullName, current.UniqueId));
             }
         }
 
@@ -142,7 +173,7 @@ namespace ENode.Domain
         {
             if (_uncommittedEvents == null)
             {
-                return new IDomainEvent[0];
+                return _emptyEvents;
             }
             return _uncommittedEvents.ToArray();
         }
@@ -150,7 +181,7 @@ namespace ENode.Domain
         {
             if (_version + 1 != newVersion)
             {
-                throw new Exception(string.Format("Cannot accept invalid version: {0}, expect version: {1}", newVersion, _version + 1));
+                throw new InvalidOperationException(string.Format("Cannot accept invalid version: {0}, expect version: {1}, current aggregateRoot type: {2}, id: {3}", newVersion, _version + 1, this.GetType().FullName, _id));
             }
             _version = newVersion;
             _uncommittedEvents.Clear();
